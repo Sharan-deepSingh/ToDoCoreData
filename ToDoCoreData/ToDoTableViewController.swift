@@ -12,13 +12,18 @@ class ToDoTableViewController: UITableViewController {
 
     //MARK: - Properties
     var toDoList: [ToDo] = []
+    var category: Categories? {
+        didSet {
+            fetchToDos()
+        }
+    }
     let context = (UIApplication.shared.delegate as? AppDelegate)?.persistentContainer.viewContext
     
     //MARK: - LifeCycle Methods
     override func viewDidLoad() {
         super.viewDidLoad()
         
-        toDoList = fetchAllToDos()
+        fetchToDos()
         
         /// Code to print path for user defaults file
         print(NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first ?? "")
@@ -36,16 +41,20 @@ class ToDoTableViewController: UITableViewController {
     }
     
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: "ToDoCell", for: indexPath)
+        let cell = tableView.dequeueReusableCell(withIdentifier: "ToDoCell", for: indexPath) as! ToDoCell
         
         cell.textLabel?.text = toDoList[indexPath.row].title
         cell.accessoryType = toDoList[indexPath.row].isSelected ? .checkmark : .none
+        cell.index = indexPath.row
+        cell.deleteToDo = { [weak self] index in
+            self?.deleteToDo(at: index)
+        }
         
         return cell
     }
     
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        var cell = tableView.cellForRow(at: indexPath)
+        let cell = tableView.cellForRow(at: indexPath)
         cell?.accessoryType = cell?.accessoryType == .checkmark ? .none : .checkmark
 
         /// Update selection on DB
@@ -71,6 +80,7 @@ class ToDoTableViewController: UITableViewController {
                 let toDo = ToDo(context: context)
                 toDo.title = textField.text
                 toDo.isSelected = false
+                toDo.hasCategory = self.category
                 
                 self.toDoList.append(toDo)
                 self.saveContext { feedBack in
@@ -84,34 +94,61 @@ class ToDoTableViewController: UITableViewController {
         self.present(alert, animated: true)
     }
     
-    private func fetchAllToDos() -> [ToDo] {
-        if let toDos = fetchToDos() {
-            return toDos
-        }
-        
-        return []
+    private func deleteToDo(at index: Int) {
+        context?.delete(toDoList[index])
+        toDoList.remove(at: index)
+        saveContext()
+        tableView.reloadData()
     }
     
-    private func fetchToDos() -> [ToDo]? {
-        let request: NSFetchRequest<ToDo> = ToDo.fetchRequest()
+    @discardableResult private func fetchToDos(with request: NSFetchRequest<ToDo> = ToDo.fetchRequest(), and searchPredicate: NSPredicate? = nil) -> [ToDo] {
+        let predicate = NSPredicate(format: "hasCategory.title MATCHES %@", category?.title ?? "")
         
+        if let sp = searchPredicate {
+            request.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [predicate, sp])
+        } else {
+            request.predicate = predicate
+        }
+                
         do {
             let toDos = try context?.fetch(request)
-            return toDos
+            toDoList = toDos ?? []
+            tableView.reloadData()
+
+            return toDos ?? []
         } catch {
             print("Got some error while fetching data, Reason: \(error.localizedDescription)")
-            return nil
+            return []
         }
     }
     
-    private func saveContext(completion: (String) -> Void) {
+    private func saveContext(completion: ((String) -> Void)? = nil) {
         if let context = context {
             do {
                 try context.save()
-                completion("Success")
+                completion?("Success")
             } catch {
-                completion("Error in saving context, Reason: \(error.localizedDescription)")
+                completion?("Error in saving context, Reason: \(error.localizedDescription)")
             }
+        }
+    }
+}
+
+extension ToDoTableViewController: UISearchBarDelegate {
+    
+    func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) {
+        if !(searchBar.text?.isEmpty ?? true) {
+            let request: NSFetchRequest<ToDo> = ToDo.fetchRequest()
+            /// [cd] means case and diacritic insensetive (Diacritic means jida k a and à will be treated as same some languages use these diacritics)
+            let predicate = NSPredicate(format: "title CONTAINS[cd] %@", searchBar.text!)
+            /// This is used to apply some sort order on request
+            let sortDescriptor = NSSortDescriptor(key: "title", ascending: true)
+            request.sortDescriptors = [sortDescriptor]
+            
+            fetchToDos(with: request, and: predicate)
+        } else {
+            fetchToDos()
+            searchBar.resignFirstResponder()
         }
     }
 }
